@@ -5,17 +5,17 @@ import plotly.graph_objects as go
 import yfinance as yf
 from datetime import timedelta
 
-st.set_page_config(page_title="Carteira V63 Final", layout="wide")
+st.set_page_config(page_title="Carteira V70 Final", layout="wide")
 
 # --- GUIA DE USO ---
 with st.expander("📘 Guia Rápido", expanded=False):
     st.markdown("""
     1.  **Ajuste de Preço:** Na barra lateral, digite o Ticker e o Preço. Ao dar **ENTER**, ele salva.
-    2.  **Gráfico:** Clique na linha da tabela para ver o gráfico de Velas + Triângulos.
+    2.  **Gráfico:** Clique na linha da tabela para ver o gráfico detalhado.
     3.  **Ajuste de Split:** Se o triângulo estiver fora do lugar, use o Fator Multiplicador na barra lateral.
     """)
 
-st.title("📊 Dashboard Pro (Final)")
+st.title("📊 Dashboard Pro (Completo)")
 
 # ==========================================
 # 1. FUNÇÕES AUXILIARES
@@ -184,6 +184,33 @@ def get_precos(carteira):
     except: pass
     return {}
 
+# --- BENCHMARKS ---
+@st.cache_data(ttl=3600)
+def get_benchmarks(data_inicio):
+    indices = {'Ibovespa 🇧🇷': '^BVSP', 'S&P 500 🇺🇸': '^GSPC', 'IFIX (ETF) 🏢': 'XFIX11.SA', 'CDI (Via LFTS11) 🐢': 'LFTS11.SA', 'Dólar 💵': 'BRL=X'}
+    resultados = {}
+    try:
+        tickers_lista = list(indices.values())
+        dados = yf.download(tickers_lista, start=data_inicio, progress=False)['Close']
+        if not dados.empty:
+            if dados.index.tz is not None: dados.index = dados.index.tz_localize(None)
+            for nome, ticker in indices.items():
+                try:
+                    serie = pd.Series()
+                    if isinstance(dados.columns, pd.MultiIndex):
+                         if ticker in dados.columns: serie = dados[ticker]
+                    else:
+                         if ticker in dados.columns: serie = dados[ticker]
+                         elif len(tickers_lista) == 1: serie = dados
+                    serie = serie.dropna()
+                    if not serie.empty:
+                        val_ini = float(serie.iloc[0])
+                        val_fim = float(serie.iloc[-1])
+                        if val_ini > 0: resultados[nome] = (val_fim - val_ini) / val_ini
+                except: pass
+    except: pass
+    return resultados
+
 # ==========================================
 # 4. GRÁFICO POP-UP (CANDLESTICK + TRIÂNGULOS)
 # ==========================================
@@ -205,13 +232,10 @@ def mostrar_grafico_popup(ticker, df_completo, fator_ajuste=1.0):
     df_ativo['Preco'] = df_ativo['Preco'].apply(converter_numero_br)
     df_ativo['Tipo Norm'] = df_ativo['Tipo'].apply(lambda x: 'Compra' if 'c' in str(x).lower() else 'Venda')
     
-    # --- YAHOO: PREÇO NOMINAL ---
     hist_price = pd.DataFrame()
     try:
         ticker_sa = f"{ticker_clean}.SA" if not "TESOURO" in ticker_clean else ticker_clean
-        # auto_adjust=False -> Traz o preço Nominal
         dados_yahoo = yf.download(ticker_sa, period="10y", progress=False, auto_adjust=False)
-        
         if not dados_yahoo.empty:
             if 'Close' in dados_yahoo:
                 close_data = dados_yahoo['Close']
@@ -219,54 +243,54 @@ def mostrar_grafico_popup(ticker, df_completo, fator_ajuste=1.0):
                     close_data.index = close_data.index.tz_localize(None).normalize()
                 else:
                     close_data.index = close_data.index.normalize()
-
                 data_min = df_ativo['Data'].min() - timedelta(days=30)
                 hist_price = dados_yahoo[dados_yahoo.index >= data_min]
-                
                 if isinstance(hist_price.columns, pd.MultiIndex):
                     hist_price.columns = hist_price.columns.get_level_values(0)
-
-    except Exception as e:
-        st.error(f"Erro Yahoo: {e}")
+    except Exception as e: pass
 
     fig = go.Figure()
-    
-    # 1. Candlestick (Velas)
     if not hist_price.empty:
         fig.add_trace(go.Candlestick(
             x=hist_price.index,
             open=hist_price['Open'], high=hist_price['High'],
             low=hist_price['Low'], close=hist_price['Close'],
-            name='Mercado'
+            name='Mercado',
+            hovertext=[f"Data: {d.strftime('%d/%m/%Y')}<br>Abertura: R$ {o:.2f}<br>Fech: R$ {c:.2f}" for d,o,c in zip(hist_price.index, hist_price['Open'], hist_price['Close'])],
+            hoverinfo="text"
         ))
         fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 
-    # 2. Triângulos
     cores = {'Compra': '#00CC96', 'Venda': '#EF553B'}
     simbolos = {'Compra': 'triangle-up', 'Venda': 'triangle-down'}
     
+    # Pega preço atual para calcular rentabilidade no tooltip
+    try:
+        preco_hoje = hist_price['Close'].iloc[-1]
+    except: preco_hoje = 0
+
     for tipo in ['Compra', 'Venda']:
         df_t = df_ativo[df_ativo['Tipo Norm'] == tipo]
         if not df_t.empty:
             preco_plot = df_t['Preco'] * fator_ajuste 
             
+            rent_texts = []
+            for p in df_t['Preco']:
+                if preco_hoje > 0:
+                    diff = (preco_hoje - p) / p
+                    sinal = "+" if diff > 0 else ""
+                    cor_res = "#90EE90" if diff > 0 else "#FFB6C1"
+                    rent_texts.append(f"<span style='color:{cor_res}'><b>{sinal}{diff:.2%}</b></span>")
+                else: rent_texts.append("-")
+
             fig.add_trace(go.Scatter(
-                x=df_t['Data'], 
-                y=preco_plot, 
-                mode='markers', 
-                name=f"Sua {tipo}",
-                marker=dict(
-                    color='white', 
-                    size=12, 
-                    symbol=simbolos[tipo],
-                    line=dict(width=2, color=cores[tipo])
-                ),
-                hovertemplate=f"<b>{tipo}</b><br>Data: %{{x|%d/%m/%Y}}<br>Preço Real: R$ %{{customdata:.2f}}<br>Qtd: %{{text}}<extra></extra>",
-                customdata=df_t['Preco'],
-                text=df_t['Qtd']
+                x=df_t['Data'], y=preco_plot, mode='markers', name=f"Sua {tipo}",
+                marker=dict(color='white', size=12, symbol=simbolos[tipo], line=dict(width=2, color=cores[tipo])),
+                customdata=list(zip(df_t['Preco'], rent_texts, df_t['Qtd'])),
+                hovertemplate=f"<b>{tipo} Real</b><br>Data: %{{x|%d/%m/%Y}}<br>Preço Pago: R$ %{{customdata[0]:.2f}}<br>Resultado Hoje: %{{customdata[1]}}<br>Qtd: %{{customdata[2]}}<extra></extra>",
             ))
 
-    fig.update_layout(template="plotly_dark", height=500, margin=dict(l=20, r=20, t=40, b=20), xaxis_rangeslider_visible=False)
+    fig.update_layout(template="plotly_dark", height=600, margin=dict(l=20, r=20, t=40, b=20), xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
@@ -279,32 +303,24 @@ if 'fator_split' not in st.session_state: st.session_state['fator_split'] = 1.0
 with st.sidebar:
     st.header("⚙️ Ajustes")
     rf_manual = st.number_input("Renda Fixa (R$)", 0.0, step=100.0)
-    
     st.divider()
     st.markdown("### 📉 Ajuste Gráfico (Splits)")
     st.session_state['fator_split'] = st.number_input("Fator Multiplicador", value=1.0, step=0.1, format="%.2f")
 
     st.divider()
-    tab1, tab2 = st.tabs(["Cotação", "Custo"])
+    tab1, tab2 = st.tabs(["Cotação", "Custo (PM)"])
     with tab1:
-        st.caption("ENTER para salvar")
         with st.form(key='form_cot'):
             ap = st.text_input("Ativo (Cot)").upper().strip()
             np = st.number_input("R$ Atual", 0.0, format="%.2f")
-            if st.form_submit_button("Salvar"):
-                st.session_state['ajustes_preco'][ap] = np
-                st.rerun()
+            if st.form_submit_button("Salvar"): st.session_state['ajustes_preco'][ap] = np; st.rerun()
         if st.session_state['ajustes_preco']:
             if st.button("Limpar Cot"): st.session_state['ajustes_preco'] = {}; st.rerun()
-
     with tab2:
-        st.caption("ENTER para salvar")
         with st.form(key='form_pm'):
             apm = st.text_input("Ativo (PM)").upper().strip()
             npm = st.number_input("R$ Custo", 0.0, format="%.2f")
-            if st.form_submit_button("Salvar"):
-                st.session_state['ajustes_pm'][apm] = npm
-                st.rerun()
+            if st.form_submit_button("Salvar"): st.session_state['ajustes_pm'][apm] = npm; st.rerun()
         if st.session_state['ajustes_pm']:
             if st.button("Limpar PM"): st.session_state['ajustes_pm'] = {}; st.rerun()
 
@@ -384,18 +400,19 @@ if arquivo:
                 yoc_global = (divs_total / investido_total) * 100
 
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Patrimônio Total", f"R$ {patrimonio_total:,.2f}")
-            c2.metric("Lucro Total Geral", f"R$ {resultado_geral:,.2f}", delta=f"{perc_geral:.2f}%")
+            c1.metric("Patrimônio Total", f"R$ {patrimonio_total:,.2f}", help="Ações + FIIs + Renda Fixa")
+            c2.metric("Lucro Total Geral", f"R$ {resultado_geral:,.2f}", delta=f"{perc_geral:.2f}% (Retorno)", help="Valorização + Dividendos + Vendas")
             perc_val = 0
             if investido_total > 0: perc_val = (lucro_valorizacao / investido_total) * 100
-            c3.metric("Valorização (Cotação)", f"R$ {lucro_valorizacao:,.2f}", delta=f"{perc_val:.2f}%")
-            c4.metric("Dividendos", f"R$ {divs_total:,.2f}", delta=f"{yoc_global:.2f}%")
+            c3.metric("Valorização (Cotação)", f"R$ {lucro_valorizacao:,.2f}", delta=f"{perc_val:.2f}%", delta_color="normal")
+            c4.metric("Dividendos", f"R$ {divs_total:,.2f}", delta=f"{yoc_global:.2f}% (YoC)")
             c5.metric("Swing Trade", f"R$ {st_total:,.2f}")
 
-            if ativos_custo: st.warning(f"⚠️ Usando preço de custo para: {', '.join(ativos_custo)}")
+            if ativos_custo: st.warning(f"⚠️ Usando preço de custo para: {', '.join(ativos_custo)}. Ajuste na barra lateral.")
 
             st.divider()
             
+            # TREEMAP
             if not df_ativos.empty:
                 st.subheader("🗺️ Mapa")
                 df_ativos['Label'] = df_ativos['Valor Hoje'].apply(lambda x: f"R$ {x:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
@@ -409,17 +426,53 @@ if arquivo:
 
             st.divider()
 
+            # BENCHMARKS
+            st.subheader("🏆 Comparativo de Mercado")
+            try:
+                data_inicio = df_raw['Data'].min()
+                benchmarks = get_benchmarks(data_inicio)
+                if benchmarks:
+                    cols_b = st.columns(len(benchmarks))
+                    for i, (nome, rent) in enumerate(benchmarks.items()):
+                        diff = perc_geral - (rent * 100)
+                        cols_b[i].metric(nome, f"{rent:.2%}", delta=f"{diff:.2f}% vs {nome}")
+            except: pass
+
+            st.divider()
+
+            # ARCA COM RENTABILIDADE (CORRIGIDA AQUI!)
             col_a1, col_a2 = st.columns([1, 2])
-            dados_arca = df_ativos.groupby('Classe')[['Valor Hoje']].sum().reset_index()
+            
+            # Agrupamento somando Valor e Investido para calcular rentabilidade
+            dados_arca = df_ativos.groupby('Classe')[['Valor Hoje', 'Investido']].sum().reset_index()
+            dados_arca['Rentabilidade'] = (dados_arca['Valor Hoje'] - dados_arca['Investido']) / dados_arca['Investido']
+
             if rf_manual > 0:
-                nova = pd.DataFrame({'Classe': ['Caixa/RF 💰'], 'Valor Hoje': [rf_manual]})
+                nova = pd.DataFrame({
+                    'Classe': ['Caixa/RF 💰'], 'Valor Hoje': [rf_manual], 
+                    'Investido': [rf_manual], 'Rentabilidade': [0.0]
+                })
                 dados_arca = pd.concat([dados_arca, nova], ignore_index=True)
+            
             with col_a1:
                 fig_arca = px.pie(dados_arca, values='Valor Hoje', names='Classe', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
                 st.plotly_chart(fig_arca, use_container_width=True)
+            
             with col_a2:
                 dados_arca['%'] = dados_arca['Valor Hoje'] / patrimonio_total
-                st.dataframe(dados_arca.style.format({'Valor Hoje': 'R$ {:,.2f}', '%': '{:.1%}'}).bar(subset=['%'], color='#5fba7d'), use_container_width=True, hide_index=True)
+                
+                # Estilização da Tabela ARCA
+                def style_rent(v):
+                    color = '#2ca02c' if v >= 0 else '#d62728'
+                    return f'color: {color}; font-weight: bold;'
+                
+                st.dataframe(
+                    dados_arca[['Classe', 'Valor Hoje', '%', 'Rentabilidade']].style
+                    .format({'Valor Hoje': 'R$ {:,.2f}', '%': '{:.1%}', 'Rentabilidade': '{:.2%}'})
+                    .bar(subset=['%'], color='#5fba7d')
+                    .map(style_rent, subset=['Rentabilidade']),
+                    use_container_width=True, hide_index=True
+                )
 
             st.divider()
 
@@ -438,16 +491,12 @@ if arquivo:
                     })
                     .map(style_rentability, subset=['Rent. (%)', 'Var. Cotação (%)', 'YoC (%)'])
                     .bar(subset=['Valor Hoje'], color='#d1e7dd'),
-                    use_container_width=True, 
-                    hide_index=True,
-                    on_select="rerun",
-                    selection_mode="single-row"
+                    use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row"
                 )
                 
                 if event.selection.rows:
                     indice_sel = event.selection.rows[0]
                     ativo_clicado = df_ativos.iloc[indice_sel]['Ativo']
-                    # Passa o fator de split da sidebar para o popup
                     mostrar_grafico_popup(ativo_clicado, df_raw, st.session_state.get('fator_split', 1.0))
             
             st.divider()
@@ -460,7 +509,6 @@ if arquivo:
                 else: st.info("Nenhuma venda.")
                 
             with st.expander("🧾 Extrato Detalhado de Proventos"):
-                # VARIÁVEL CORRIGIDA AQUI
                 if not df_extrato_divs.empty:
                     st.dataframe(df_extrato_divs.sort_values('Data', ascending=False).style.format({
                         'Valor Unit.': 'R$ {:.4f}', 'Total Recebido': 'R$ {:.2f}', 'Qtd': '{:g}'
